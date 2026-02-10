@@ -10,39 +10,41 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3030;
 
-console.log("--- PowerLog Server Start ---");
+console.log("--- PowerLog Server Startvorgang ---");
 
-// Absolute Pfade sicherstellen
-const defaultDbPath = path.join(__dirname, 'data', 'powerlog.db');
+// Absolute Pfade für SQLite sicherstellen
+const defaultDataDir = path.join(__dirname, 'data');
+const defaultDbPath = path.join(defaultDataDir, 'powerlog.db');
+
 const DB_PATH = process.env.DB_PATH 
   ? (path.isAbsolute(process.env.DB_PATH) ? process.env.DB_PATH : path.resolve(__dirname, process.env.DB_PATH)) 
   : defaultDbPath;
 
-console.log(`[PowerLog] Datenbank-Pfad: ${DB_PATH}`);
+const DATA_DIR = path.dirname(DB_PATH);
 
+// 1. Sicherstellen, dass der Ordner existiert
 try {
-  const dataDir = path.dirname(DB_PATH);
-  if (!fs.existsSync(dataDir)) {
-    console.log(`[PowerLog] Erstelle Verzeichnis: ${dataDir}`);
-    fs.mkdirSync(dataDir, { recursive: true });
+  if (!fs.existsSync(DATA_DIR)) {
+    console.log(`[PowerLog] Erstelle Datenbank-Verzeichnis: ${DATA_DIR}`);
+    fs.mkdirSync(DATA_DIR, { recursive: true });
   }
 } catch (err) {
-  console.error(`[PowerLog] KRITISCH: Verzeichnis konnte nicht erstellt werden: ${err.message}`);
-  process.exit(1);
+  console.error(`[PowerLog] FEHLER beim Erstellen des Verzeichnisses: ${err.message}`);
 }
 
-const db = new sqlite3.Database(DB_PATH, (err) => {
+// 2. Datenbank öffnen (erstellt Datei falls nicht vorhanden)
+const db = new sqlite3.Database(DB_PATH, sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE, (err) => {
   if (err) {
-    console.error(`[PowerLog] KRITISCH: Datenbank-Verbindungsfehler: ${err.message}`);
+    console.error(`[PowerLog] KRITISCH: Datenbank konnte nicht geöffnet werden: ${err.message}`);
     process.exit(1);
   }
-  console.log("[PowerLog] Datenbank erfolgreich verbunden.");
+  console.log(`[PowerLog] Datenbank verbunden: ${DB_PATH}`);
 });
 
 app.use(cors());
 app.use(express.json());
 
-// Tabellen initialisieren
+// 3. Tabellen-Initialisierung
 db.serialize(() => {
   db.run(`CREATE TABLE IF NOT EXISTS batteries (
     id TEXT PRIMARY KEY,
@@ -61,9 +63,9 @@ db.serialize(() => {
     chargingHistory TEXT
   )`, (err) => {
     if (err) {
-      console.error("[PowerLog] Fehler beim Erstellen der Tabelle:", err.message);
+      console.error("[PowerLog] Fehler beim Anlegen der Tabelle:", err.message);
     } else {
-      console.log("[PowerLog] Datenbank-Schema bereit.");
+      console.log("[PowerLog] Datenbank-Schema erfolgreich geprüft/angelegt.");
     }
   });
 });
@@ -83,7 +85,7 @@ app.get('/api/batteries', (req, res) => {
 app.post('/api/batteries', (req, res) => {
   const b = req.body;
   if (!b.id || !b.name) {
-    return res.status(400).json({ error: "Invalid battery data: Missing id or name" });
+    return res.status(400).json({ error: "Ungültige Daten: ID oder Name fehlt." });
   }
   
   const historyJson = JSON.stringify(b.chargingHistory || []);
@@ -100,13 +102,13 @@ app.post('/api/batteries', (req, res) => {
     b.brand || '', 
     b.size || b.name, 
     b.category, 
-    b.quantity || 0, 
-    b.totalQuantity || 0, 
-    b.minQuantity || 0, 
-    b.inUse || 0, 
-    b.usageAccumulator || 0, 
-    b.capacityMah || 0, 
-    b.chargeCycles || 0, 
+    Number(b.quantity) || 0, 
+    Number(b.totalQuantity) || 0, 
+    Number(b.minQuantity) || 0, 
+    Number(b.inUse) || 0, 
+    Number(b.usageAccumulator) || 0, 
+    Number(b.capacityMah) || 0, 
+    Number(b.chargeCycles) || 0, 
     b.lastCharged || '', 
     historyJson
   ], function(err) {
@@ -114,7 +116,7 @@ app.post('/api/batteries', (req, res) => {
       console.error("[PowerLog] SQL Fehler beim Speichern:", err.message);
       return res.status(500).json({ error: err.message });
     }
-    console.log(`[PowerLog] Eintrag gespeichert: ${b.name} (${b.id})`);
+    console.log(`[PowerLog] Gespeichert: ${b.name} (${b.id})`);
     res.json({ success: true, id: b.id });
   });
 });
@@ -133,10 +135,10 @@ app.get('*', (req, res) => {
   if (fs.existsSync(indexPath)) {
     res.sendFile(indexPath);
   } else {
-    res.status(404).send("index.html nicht gefunden.");
+    res.status(404).send("Frontend-Dateien nicht gefunden.");
   }
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[PowerLog] ✅ Server läuft auf http://0.0.0.0:${PORT}`);
+  console.log(`[PowerLog] ✅ Server läuft auf Port ${PORT}`);
 });

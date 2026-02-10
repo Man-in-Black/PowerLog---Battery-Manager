@@ -11,7 +11,6 @@ const generateSafeId = () => {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
     return crypto.randomUUID();
   }
-  // Manueller Fallback
   return 'idx-' + Math.random().toString(36).substr(2, 9) + '-' + Date.now().toString(36);
 };
 
@@ -75,8 +74,9 @@ const App: React.FC = () => {
       const res = await fetch('/api/batteries');
       if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
       const data = await res.json();
-      setBatteries(Array.isArray(data) ? data : []);
-      localStorage.setItem('powerlog_batteries', JSON.stringify(data));
+      const validData = Array.isArray(data) ? data : [];
+      setBatteries(validData);
+      localStorage.setItem('powerlog_batteries', JSON.stringify(validData));
     } catch (e) {
       console.warn("API nicht erreichbar, nutze lokales Backup.", e);
       const localData = localStorage.getItem('powerlog_batteries');
@@ -87,30 +87,28 @@ const App: React.FC = () => {
   };
 
   const saveToStorage = async (battery: Battery) => {
-    // 1. Lokale Liste berechnen
-    let updatedList: Battery[] = [];
+    // 1. Lokalen State aktualisieren
     setBatteries(prev => {
-      const exists = prev.find(b => b.id === battery.id);
-      if (exists) {
-        updatedList = prev.map(b => b.id === battery.id ? battery : b);
-      } else {
-        updatedList = [...prev, battery];
-      }
-      // 2. Local Backup synchronisieren
-      localStorage.setItem('powerlog_batteries', JSON.stringify(updatedList));
-      return updatedList;
+      const newList = prev.find(b => b.id === battery.id)
+        ? prev.map(b => b.id === battery.id ? battery : b)
+        : [...prev, battery];
+      localStorage.setItem('powerlog_batteries', JSON.stringify(newList));
+      return newList;
     });
 
-    // 3. API Synchronisation (immer versuchen)
+    // 2. API Synchronisation
     try {
       const res = await fetch('/api/batteries', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(battery)
       });
-      if (!res.ok) throw new Error("API Save Failed");
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.error || "API Save Failed");
+      }
     } catch (e) {
-      console.error("API Sync fehlgeschlagen, Daten sind nur lokal gespeichert.", e);
+      console.error("API Sync fehlgeschlagen, Daten sind nur lokal gespeichert:", e);
     }
   };
 
@@ -182,9 +180,13 @@ const App: React.FC = () => {
   const saveBattery = async () => {
     if (!formBattery.name) return;
     const isRechargeable = formBattery.category === BatteryCategory.RECHARGEABLE;
+    
+    // Garantierte ID Erzeugung für neue Einträge
+    const finalId = formBattery.id || generateSafeId();
+    
     const battery: Battery = {
-      id: formBattery.id || generateSafeId(),
-      name: formBattery.name || '?',
+      id: finalId,
+      name: formBattery.name || 'Unbenannt',
       brand: formBattery.brand || '',
       size: formBattery.size || formBattery.name || 'AA',
       category: (formBattery.category as BatteryCategory) || BatteryCategory.PRIMARY,
@@ -198,6 +200,7 @@ const App: React.FC = () => {
       lastCharged: isRechargeable ? (formBattery.lastCharged || new Date().toISOString()) : undefined,
       chargingHistory: formBattery.chargingHistory || [],
     };
+
     await saveToStorage(battery);
     closeModal();
   };
