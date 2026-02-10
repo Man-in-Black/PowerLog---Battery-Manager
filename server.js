@@ -10,7 +10,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3030;
 
-console.log("--- PowerLog Startvorgang ---");
+console.log("--- PowerLog Server Start ---");
 
 // Absolute Pfade sicherstellen
 const defaultDbPath = path.join(__dirname, 'data', 'powerlog.db');
@@ -60,7 +60,11 @@ db.serialize(() => {
     lastCharged TEXT,
     chargingHistory TEXT
   )`, (err) => {
-    if (err) console.error("[PowerLog] Fehler beim Erstellen der Tabelle:", err.message);
+    if (err) {
+      console.error("[PowerLog] Fehler beim Erstellen der Tabelle:", err.message);
+    } else {
+      console.log("[PowerLog] Datenbank-Schema bereit.");
+    }
   });
 });
 
@@ -78,15 +82,39 @@ app.get('/api/batteries', (req, res) => {
 
 app.post('/api/batteries', (req, res) => {
   const b = req.body;
-  if (!b.id || !b.name) return res.status(400).json({ error: "Invalid battery data" });
+  if (!b.id || !b.name) {
+    return res.status(400).json({ error: "Invalid battery data: Missing id or name" });
+  }
+  
   const historyJson = JSON.stringify(b.chargingHistory || []);
-  const stmt = db.prepare(`REPLACE INTO batteries VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
-  stmt.run([
-    b.id, b.name, b.brand, b.size, b.category, b.quantity, 
-    b.totalQuantity, b.minQuantity, b.inUse, b.usageAccumulator, 
-    b.capacityMah, b.chargeCycles, b.lastCharged, historyJson
+  
+  const sql = `REPLACE INTO batteries (
+    id, name, brand, size, category, quantity, totalQuantity, 
+    minQuantity, inUse, usageAccumulator, capacityMah, chargeCycles, 
+    lastCharged, chargingHistory
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+  db.run(sql, [
+    b.id, 
+    b.name, 
+    b.brand || '', 
+    b.size || b.name, 
+    b.category, 
+    b.quantity || 0, 
+    b.totalQuantity || 0, 
+    b.minQuantity || 0, 
+    b.inUse || 0, 
+    b.usageAccumulator || 0, 
+    b.capacityMah || 0, 
+    b.chargeCycles || 0, 
+    b.lastCharged || '', 
+    historyJson
   ], function(err) {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) {
+      console.error("[PowerLog] SQL Fehler beim Speichern:", err.message);
+      return res.status(500).json({ error: err.message });
+    }
+    console.log(`[PowerLog] Eintrag gespeichert: ${b.name} (${b.id})`);
     res.json({ success: true, id: b.id });
   });
 });
@@ -98,27 +126,17 @@ app.delete('/api/batteries/:id', (req, res) => {
   });
 });
 
-// Statische Dateien servieren
 app.use(express.static(__dirname));
 
-// SPA Fallback
 app.get('*', (req, res) => {
   const indexPath = path.join(__dirname, 'index.html');
   if (fs.existsSync(indexPath)) {
     res.sendFile(indexPath);
   } else {
-    res.status(404).send("index.html nicht gefunden. Hast du die Frontend-Dateien im Verzeichnis?");
+    res.status(404).send("index.html nicht gefunden.");
   }
 });
 
-// Server Start
-const server = app.listen(PORT, '0.0.0.0', () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`[PowerLog] ✅ Server läuft auf http://0.0.0.0:${PORT}`);
-}).on('error', (err) => {
-  if (err.code === 'EADDRINUSE') {
-    console.error(`[PowerLog] KRITISCH: Port ${PORT} wird bereits verwendet!`);
-  } else {
-    console.error(`[PowerLog] KRITISCH: Serverfehler: ${err.message}`);
-  }
-  process.exit(1);
 });

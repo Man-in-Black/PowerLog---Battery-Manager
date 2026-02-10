@@ -6,6 +6,15 @@ import { translations, Language } from './translations';
 
 type Theme = 'light' | 'dark' | 'system';
 
+// Robuste ID Generierung (Fallback für Non-HTTPS Umgebungen)
+const generateSafeId = () => {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  // Manueller Fallback
+  return 'idx-' + Math.random().toString(36).substr(2, 9) + '-' + Date.now().toString(36);
+};
+
 const App: React.FC = () => {
   const [batteries, setBatteries] = useState<Battery[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -17,7 +26,6 @@ const App: React.FC = () => {
   const [chargeModal, setChargeModal] = useState<{ isOpen: boolean; batteryId: string; amount: number }>({ isOpen: false, batteryId: '', amount: 1 });
   const [historyModal, setHistoryModal] = useState<{ isOpen: boolean; batteryId: string }>({ isOpen: false, batteryId: '' });
   const [lang, setLang] = useState<Language>('de');
-  const [useLocalStorage, setUseLocalStorage] = useState(false);
   const [sortConfig, setSortConfig] = useState<{ key: keyof Battery, direction: 'asc' | 'desc' }>({ key: 'category', direction: 'asc' });
   const [filterCategory, setFilterCategory] = useState<BatteryCategory | 'ALL'>('ALL');
   
@@ -65,26 +73,21 @@ const App: React.FC = () => {
   const fetchBatteries = async () => {
     try {
       const res = await fetch('/api/batteries');
-      if (res.status === 404) {
-        setUseLocalStorage(true);
-        const localData = localStorage.getItem('powerlog_batteries');
-        setBatteries(localData ? JSON.parse(localData) : []);
-        return;
-      }
       if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
       const data = await res.json();
       setBatteries(Array.isArray(data) ? data : []);
+      localStorage.setItem('powerlog_batteries', JSON.stringify(data));
     } catch (e) {
-      console.warn("API not reachable, switching to local storage.", e);
-      setUseLocalStorage(true);
+      console.warn("API nicht erreichbar, nutze lokales Backup.", e);
       const localData = localStorage.getItem('powerlog_batteries');
-      setBatteries(localData ? JSON.parse(localData) : []);
+      if (localData) setBatteries(JSON.parse(localData));
     } finally {
       setIsLoading(false);
     }
   };
 
   const saveToStorage = async (battery: Battery) => {
+    // 1. Lokale Liste berechnen
     let updatedList: Battery[] = [];
     setBatteries(prev => {
       const exists = prev.find(b => b.id === battery.id);
@@ -93,14 +96,12 @@ const App: React.FC = () => {
       } else {
         updatedList = [...prev, battery];
       }
+      // 2. Local Backup synchronisieren
+      localStorage.setItem('powerlog_batteries', JSON.stringify(updatedList));
       return updatedList;
     });
 
-    if (useLocalStorage) {
-      localStorage.setItem('powerlog_batteries', JSON.stringify(updatedList));
-      return;
-    }
-
+    // 3. API Synchronisation (immer versuchen)
     try {
       const res = await fetch('/api/batteries', {
         method: 'POST',
@@ -109,26 +110,22 @@ const App: React.FC = () => {
       });
       if (!res.ok) throw new Error("API Save Failed");
     } catch (e) {
-      console.error("Save Error, syncing to local:", e);
-      localStorage.setItem('powerlog_batteries', JSON.stringify(updatedList));
+      console.error("API Sync fehlgeschlagen, Daten sind nur lokal gespeichert.", e);
     }
   };
 
   const deleteFromStorage = async (id: string) => {
-    const updatedList = batteries.filter(b => b.id !== id);
-    setBatteries(updatedList);
-
-    if (useLocalStorage) {
+    setBatteries(prev => {
+      const updatedList = prev.filter(b => b.id !== id);
       localStorage.setItem('powerlog_batteries', JSON.stringify(updatedList));
-      return;
-    }
+      return updatedList;
+    });
 
     try {
       const res = await fetch(`/api/batteries/${id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error("API Delete Failed");
     } catch (e) {
-      console.error("Delete Error:", e);
-      localStorage.setItem('powerlog_batteries', JSON.stringify(updatedList));
+      console.error("API Delete Sync fehlgeschlagen:", e);
     }
   };
 
@@ -186,13 +183,13 @@ const App: React.FC = () => {
     if (!formBattery.name) return;
     const isRechargeable = formBattery.category === BatteryCategory.RECHARGEABLE;
     const battery: Battery = {
-      id: formBattery.id || crypto.randomUUID(),
+      id: formBattery.id || generateSafeId(),
       name: formBattery.name || '?',
       brand: formBattery.brand || '',
       size: formBattery.size || formBattery.name || 'AA',
-      category: formBattery.category as BatteryCategory,
+      category: (formBattery.category as BatteryCategory) || BatteryCategory.PRIMARY,
       quantity: Number(formBattery.quantity) || 0,
-      totalQuantity: isRechargeable ? Number(formBattery.totalQuantity || 1) : Number(formBattery.quantity),
+      totalQuantity: isRechargeable ? Number(formBattery.totalQuantity || 1) : Number(formBattery.quantity || 1),
       inUse: isRechargeable ? (Number(formBattery.inUse) || 0) : 0,
       minQuantity: Number(formBattery.minQuantity) || 0,
       usageAccumulator: Number(formBattery.usageAccumulator || 0),
@@ -218,10 +215,10 @@ const App: React.FC = () => {
     if (b.category === BatteryCategory.RECHARGEABLE) {
       let nextAccumulator = b.usageAccumulator + 1;
       let nextCycles = b.chargeCycles || 0;
-      if (nextAccumulator >= b.totalQuantity) { nextAccumulator = 0; nextCycles += 1; }
+      if (nextAccumulator >= (b.totalQuantity || 1)) { nextAccumulator = 0; nextCycles += 1; }
       updated = { ...b, quantity: b.quantity - 1, inUse: b.inUse + 1, usageAccumulator: nextAccumulator, chargeCycles: nextCycles };
     } else {
-      updated = { ...b, quantity: b.quantity - 1, totalQuantity: b.totalQuantity - 1 };
+      updated = { ...b, quantity: b.quantity - 1, totalQuantity: Math.max(0, (b.totalQuantity || b.quantity) - 1) };
     }
     await saveToStorage(updated);
   };
@@ -234,7 +231,7 @@ const App: React.FC = () => {
     const now = new Date().toISOString();
     
     const newHistoryEvent: ChargingEvent = {
-      id: crypto.randomUUID(),
+      id: generateSafeId(),
       date: now,
       count: moveAmount
     };
@@ -339,7 +336,7 @@ const App: React.FC = () => {
           <div className="bg-indigo-50 dark:bg-indigo-900/30 p-3 md:p-4 rounded-2xl text-indigo-600 dark:text-indigo-400 shrink-0"><BatteryIcon className="w-6 h-6 md:w-8 md:h-8" /></div>
           <div>
             <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 truncate">{t.totalInventory}</p>
-            <p className="text-xl md:text-3xl font-black">{batteries.reduce((a,b)=>a+b.totalQuantity, 0)} <span className="text-xs md:text-sm font-bold text-slate-400">{t.pcs}</span></p>
+            <p className="text-xl md:text-3xl font-black">{batteries.reduce((a,b)=>a+(b.totalQuantity || 0), 0)} <span className="text-xs md:text-sm font-bold text-slate-400">{t.pcs}</span></p>
           </div>
         </div>
         <div className="bg-white dark:bg-slate-900 p-5 md:p-8 rounded-[2rem] shadow-sm border border-slate-100 dark:border-slate-800 flex items-center gap-4 transition-colors">
@@ -353,7 +350,7 @@ const App: React.FC = () => {
           <div className="bg-emerald-50 dark:bg-emerald-900/30 p-3 md:p-4 rounded-2xl text-emerald-600 dark:text-emerald-400 shrink-0"><HistoryIcon className="w-6 h-6 md:w-8 md:h-8" /></div>
           <div>
             <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 truncate">{t.statusReady}</p>
-            <p className="text-xl md:text-3xl font-black">{batteries.reduce((a,b)=>a+b.quantity, 0)} <span className="text-xs md:text-sm font-bold text-slate-400">{t.pcs}</span></p>
+            <p className="text-xl md:text-3xl font-black">{batteries.reduce((a,b)=>a+(b.quantity || 0), 0)} <span className="text-xs md:text-sm font-bold text-slate-400">{t.pcs}</span></p>
           </div>
         </div>
       </div>
@@ -380,8 +377,8 @@ const App: React.FC = () => {
                 <th className="p-6 text-[10px] font-black uppercase tracking-widest text-slate-400 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700/50 transition-colors group select-none" onClick={() => requestSort('category')}>
                   <div className="flex items-center">{t.colArt} <SortIndicator column="category" /></div>
                 </th>
-                <th className="p-6 text-[10px] font-black uppercase tracking-widest text-slate-400 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700/50 transition-colors group select-none" onClick={() => requestSort('name')}>
-                  <div className="flex items-center">{t.colTyp} <SortIndicator column="name" /></div>
+                <th className="p-6 text-center text-[10px] font-black uppercase tracking-widest text-slate-400 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700/50 transition-colors group select-none" onClick={() => requestSort('name')}>
+                  <div className="flex items-center justify-center">{t.colTyp} <SortIndicator column="name" /></div>
                 </th>
                 <th className="p-6 text-[10px] font-black uppercase tracking-widest text-slate-400 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700/50 transition-colors group select-none" onClick={() => requestSort('brand')}>
                   <div className="flex items-center">{t.colHersteller} <SortIndicator column="brand" /></div>
@@ -410,7 +407,7 @@ const App: React.FC = () => {
                       {battery.category === BatteryCategory.RECHARGEABLE ? t.catRechargeable : battery.category === BatteryCategory.BUTTON_CELL ? t.catButton : t.catPrimary}
                     </span>
                   </td>
-                  <td className="p-6"><span className="font-black text-slate-800 dark:text-slate-200 tracking-tight text-lg">{battery.name}</span></td>
+                  <td className="p-6 text-center"><span className="font-black text-slate-800 dark:text-slate-200 tracking-tight text-lg">{battery.name}</span></td>
                   <td className="p-6"><span className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{battery.brand || '—'}</span></td>
                   <td className="p-6 text-center font-bold text-slate-500 dark:text-slate-400">{battery.capacityMah ? `${battery.capacityMah} mAh` : '—'}</td>
                   <td className="p-6 text-center font-bold text-slate-400 dark:text-slate-600">{battery.totalQuantity}</td>
@@ -421,10 +418,10 @@ const App: React.FC = () => {
                       <div className="w-full max-w-[180px]">
                         <div className="flex justify-between items-end mb-2">
                           <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">{t.colZyklen}: {battery.chargeCycles}</span>
-                          <span className="text-[10px] font-black text-indigo-500">{Math.round((battery.usageAccumulator / (battery.totalQuantity || 1)) * 100)}%</span>
+                          <span className="text-[10px] font-black text-indigo-500">{Math.round(((battery.usageAccumulator || 0) / (battery.totalQuantity || 1)) * 100)}%</span>
                         </div>
                         <div className="h-2 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden transition-colors">
-                          <div className="h-full bg-indigo-500 transition-all duration-700" style={{ width: `${(battery.usageAccumulator / (battery.totalQuantity || 1)) * 100}%` }}></div>
+                          <div className="h-full bg-indigo-500 transition-all duration-700" style={{ width: `${((battery.usageAccumulator || 0) / (battery.totalQuantity || 1)) * 100}%` }}></div>
                         </div>
                       </div>
                     ) : <span className="text-[10px] text-slate-300 dark:text-slate-700 font-bold uppercase">—</span>}
@@ -434,7 +431,7 @@ const App: React.FC = () => {
                       {battery.category === BatteryCategory.RECHARGEABLE && (
                         <>
                           <button onClick={() => setHistoryModal({ isOpen: true, batteryId: battery.id })} className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 rounded-2xl hover:bg-slate-200 dark:hover:bg-slate-700 transition-all"><HistoryIcon className="w-5 h-5" /></button>
-                          <button onClick={() => setChargeModal({ isOpen: true, batteryId: battery.id, amount: battery.inUse })} disabled={battery.inUse === 0} className="p-3 bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400 rounded-2xl hover:bg-amber-500 hover:text-white transition-all disabled:opacity-30"><ZapIcon className="w-5 h-5" /></button>
+                          <button onClick={() => setChargeModal({ isOpen: true, batteryId: battery.id, amount: battery.inUse || 0 })} disabled={!battery.inUse} className="p-3 bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400 rounded-2xl hover:bg-amber-500 hover:text-white transition-all disabled:opacity-30"><ZapIcon className="w-5 h-5" /></button>
                         </>
                       )}
                       <button onClick={() => useBattery(battery.id)} disabled={battery.quantity === 0} className="p-3 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 dark:text-indigo-400 rounded-2xl hover:bg-indigo-600 hover:text-white transition-all disabled:opacity-30"><UseIcon /></button>
@@ -481,17 +478,17 @@ const App: React.FC = () => {
               <div className="py-2">
                 <div className="flex justify-between items-end mb-2">
                   <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">{t.colZyklen}: {battery.chargeCycles}</span>
-                  <span className="text-[10px] font-black text-indigo-500">{Math.round((battery.usageAccumulator / (battery.totalQuantity || 1)) * 100)}%</span>
+                  <span className="text-[10px] font-black text-indigo-500">{Math.round(((battery.usageAccumulator || 0) / (battery.totalQuantity || 1)) * 100)}%</span>
                 </div>
                 <div className="h-2.5 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
-                  <div className="h-full bg-indigo-500 transition-all duration-700" style={{ width: `${(battery.usageAccumulator / (battery.totalQuantity || 1)) * 100}%` }}></div>
+                  <div className="h-full bg-indigo-500 transition-all duration-700" style={{ width: `${((battery.usageAccumulator || 0) / (battery.totalQuantity || 1)) * 100}%` }}></div>
                 </div>
               </div>
             )}
             <div className="flex gap-4 pt-2">
               <button onClick={() => useBattery(battery.id)} disabled={battery.quantity === 0} className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs uppercase tracking-widest shadow-lg flex items-center justify-center gap-2 active:scale-95 disabled:opacity-30"><UseIcon className="w-5 h-5" /> {t.btnUse}</button>
               {battery.category === BatteryCategory.RECHARGEABLE && (
-                <button onClick={() => setChargeModal({ isOpen: true, batteryId: battery.id, amount: battery.inUse })} disabled={battery.inUse === 0} className="flex-1 py-4 bg-amber-500 text-white rounded-2xl font-black text-xs uppercase tracking-widest shadow-lg flex items-center justify-center gap-2 active:scale-95 disabled:opacity-30"><ZapIcon className="w-5 h-5" /> {t.logCharge}</button>
+                <button onClick={() => setChargeModal({ isOpen: true, batteryId: battery.id, amount: battery.inUse || 0 })} disabled={!battery.inUse} className="flex-1 py-4 bg-amber-500 text-white rounded-2xl font-black text-xs uppercase tracking-widest shadow-lg flex items-center justify-center gap-2 active:scale-95 disabled:opacity-30"><ZapIcon className="w-5 h-5" /> {t.logCharge}</button>
               )}
             </div>
           </div>
