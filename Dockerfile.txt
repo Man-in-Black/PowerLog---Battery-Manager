@@ -1,3 +1,4 @@
+
 FROM node:20-alpine AS builder
 
 WORKDIR /build
@@ -28,16 +29,18 @@ RUN npm install --production
 COPY --from=builder /build/server.js ./
 COPY --from=builder /build/dist ./dist
 
-# Server.js patchen um dist zu servieren
+# Verzeichnis für Datenbank erstellen und Berechtigungen setzen
+RUN mkdir -p /app/data && chown -R node:node /app
+
+# Server.js patchen um dist zu servieren (falls nötig)
 RUN sed -i 's|express.static(__dirname)|express.static(path.join(__dirname, "dist"))|g' server.js && \
     sed -i "s|path.join(__dirname, 'index.html')|path.join(__dirname, 'dist', 'index.html')|g" server.js
-
-RUN mkdir -p /app/data && chown -R node:node /app
 
 USER node
 
 EXPOSE 3030
 
+# Volume Definition nach chown, damit Rechte erhalten bleiben
 VOLUME ["/app/data"]
 
 CMD ["node", "server.js"]
