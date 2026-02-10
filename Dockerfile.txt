@@ -1,0 +1,43 @@
+FROM node:20-alpine AS builder
+
+WORKDIR /build
+
+RUN apk add --no-cache git python3 make g++
+
+RUN git clone https://github.com/Man-in-Black/PowerLog---Battery-Manager.git .
+
+# Alle Dependencies installieren
+RUN npm install express sqlite3 cors && \
+    npm install --save-dev vite @vitejs/plugin-react typescript @types/react @types/react-dom react react-dom
+
+# Production Build
+RUN npx vite build
+
+# Production Stage
+FROM node:20-alpine
+
+WORKDIR /app
+
+RUN apk add --no-cache sqlite
+
+# Backend Dependencies
+COPY --from=builder /build/package*.json ./
+RUN npm install --production
+
+# Server und Build kopieren
+COPY --from=builder /build/server.js ./
+COPY --from=builder /build/dist ./dist
+
+# Server.js patchen um dist zu servieren
+RUN sed -i 's|express.static(__dirname)|express.static(path.join(__dirname, "dist"))|g' server.js && \
+    sed -i "s|path.join(__dirname, 'index.html')|path.join(__dirname, 'dist', 'index.html')|g" server.js
+
+RUN mkdir -p /app/data && chown -R node:node /app
+
+USER node
+
+EXPOSE 3030
+
+VOLUME ["/app/data"]
+
+CMD ["node", "server.js"]

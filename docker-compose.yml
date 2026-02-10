@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  powerlog:
+    build: .
+    container_name: powerlog
+    restart: unless-stopped
+    ports:
+      - "3030:3030"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - PORT=3030
+      - DB_PATH=/app/data/powerlog.db
+      - NODE_ENV=production
